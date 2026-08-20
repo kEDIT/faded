@@ -58,20 +58,29 @@ GOOS=darwin GOARCH=arm64 go build -o faded .
 
 ## Quick start
 
-`faded` looks for `attempts.txt` and `subs.txt` in the current directory by
-default, so the common path is almost flagless.
+By default, `faded` prompts for near-miss guesses in the terminal, so no
+attempts file is required. Enter one guess per line and press Enter on a blank
+line to start generating candidates. Use `--attempts FILE` when you prefer a
+file, and `subs.txt` is still read from the current directory when present.
 
-1. Put your near-miss guesses in `attempts.txt`, one per line:
+1. Start generation and enter your near-miss guesses when prompted:
 
+   ```sh
+   faded gen
    ```
+
+   ```text
+   Enter near-miss guesses, one per line. Press Enter on a blank line when done:
    BlueSky1988
    Blu3Sky!
    SkyBlue88
+
    ```
 
    Optionally list the reusable building blocks you know you use in `subs.txt`
-   (one per line). If you skip this, the tool infers them from your attempts,
-   but giving it the real fragments sharpens the ranking a lot.
+   (one per line), or pass them with `--sub`. If you skip this, the tool infers
+   them from your attempts, but giving it the real fragments sharpens the
+   ranking a lot.
 
    ```
    Sky
@@ -108,7 +117,7 @@ default, so the common path is almost flagless.
 
    ```sh
    faded mark 'Blu3Sky!' worked
-   faded forget /tmp/faded_state.json attempts.txt
+   faded forget /tmp/faded_state.json
    ```
 
 ---
@@ -140,9 +149,10 @@ candidates  profile:balanced   800 untried · 0 tried
 
 Keys: `↑/↓` (or `j/k`) move, `PgUp/PgDn`, `g/G` jump to top/bottom; `w`/Enter mark
 worked, `f` mark failed, `u` reset a mark; `tab` cycles the aggressiveness profile
-(regenerating while keeping your marks); `s` toggles the strategy scoreboard; `q`
-quits. Like the session, **everything lives in memory** — nothing is written to
-disk, so there's no file to clean up when you quit.
+(regenerating while keeping your marks); `s` toggles the strategy scoreboard;
+`h` opens the generation-options help screen; uppercase `S` saves an encrypted
+snapshot after prompting for a passphrase; `q` quits. Like the session,
+**everything lives in memory** until you explicitly save.
 
 The TUI is the only part of `faded` with third-party dependencies (Bubble Tea and
 Lipgloss). They're **vendored** into the repo, so it still builds offline with no
@@ -153,7 +163,8 @@ Lipgloss). They're **vendored** into the repo, so it still builds offline with n
 
 
 - **Attempts** — the handful of passwords you think are "close." These seed both
-  the substring miner and the typo layers. Default file: `attempts.txt`.
+   the substring miner and the typo layers. By default they are entered in the
+   terminal; `--attempts FILE` reads them from a file instead.
 - **Substrings** — the reusable chunks of your master password. Supplied
   explicitly (`--subs` / `--sub`) and/or mined automatically. Default file:
   `subs.txt`.
@@ -224,7 +235,7 @@ Run `faded gen -h` for the authoritative list. Summary:
 
 | Flag             | Meaning |
 |------------------|---------|
-| `--attempts FILE`| File of near-miss guesses, one per line. Default `attempts.txt`. |
+| `--attempts FILE`| File of near-miss guesses, one per line. Default: prompt in the terminal. |
 | `--subs FILE`    | File of known building-block substrings. Default `subs.txt` (used if present). |
 | `--sub STRING`   | An explicit substring; repeatable (`--sub Sky --sub Blue`). |
 | `--top N`        | How many candidates to print now (default 25; `0` prints none). |
@@ -357,7 +368,7 @@ faded status --state /tmp/exp_aggressive.json
 **Clean up when done:**
 
 ```sh
-faded forget /tmp/faded_state.json attempts.txt subs.txt
+faded forget /tmp/faded_state.json subs.txt
 ```
 
 ---

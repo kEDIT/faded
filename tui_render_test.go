@@ -77,6 +77,52 @@ func TestTUIStatusView(t *testing.T) {
 	}
 }
 
+func TestTUIHelpView(t *testing.T) {
+	tm := newTestModel(t)
+	var m tea.Model = tm
+	m = send(m, tea.WindowSizeMsg{Width: 72, Height: 30})
+	m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
+	tm = m.(*tuiModel)
+	if tm.view != "help" {
+		t.Fatalf("help view not shown; got %q", tm.view)
+	}
+	out := tm.View()
+	for _, text := range []string{"generation options", "profile", "depth", "typos", "faded gen -h"} {
+		if !strings.Contains(out, text) {
+			t.Errorf("help view missing %q; got:\n%s", text, out)
+		}
+	}
+}
+
+func TestTUISavesEncryptedSession(t *testing.T) {
+	t.Setenv("FADED_DIR", t.TempDir())
+	oldKDFIters := kdfIters
+	kdfIters = 1
+	defer func() { kdfIters = oldKDFIters }()
+
+	tm := newTestModel(t)
+	var m tea.Model = tm
+	m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("S")})
+	tm = m.(*tuiModel)
+	if tm.view != "save" || tm.saveStage != 1 {
+		t.Fatalf("save prompt did not open: view=%q stage=%d", tm.view, tm.saveStage)
+	}
+	for _, runes := range []string{"secret", "secret"} {
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(runes)})
+		m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
+	}
+	tm = m.(*tuiModel)
+	if tm.view != "list" || tm.sess.dirty {
+		t.Fatalf("save did not return to clean list: view=%q dirty=%t", tm.view, tm.sess.dirty)
+	}
+	if !strings.Contains(tm.flash, "saved encrypted session") {
+		t.Fatalf("save confirmation missing: %q", tm.flash)
+	}
+	if isEncryptedFile(defaultEncryptedPath()) == false {
+		t.Fatalf("saved session is not an encrypted envelope")
+	}
+}
+
 func TestTUIQuit(t *testing.T) {
 	tm := newTestModel(t)
 	var m tea.Model = tm
