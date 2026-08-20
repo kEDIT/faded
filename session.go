@@ -75,7 +75,7 @@ func cmdSession(args []string) error {
 		attempts, subs, load, profileName string
 		subList                           multiFlag
 	)
-	fs.StringVar(&attempts, "attempts", defaultAttemptsFile, "file of near-miss guesses (one per line)")
+	fs.StringVar(&attempts, "attempts", "", "file of near-miss guesses (default: prompt in the terminal)")
 	fs.StringVar(&subs, "subs", defaultSubsFile, "optional file of known building-block substrings")
 	fs.Var(&subList, "sub", "an explicit substring (repeatable)")
 	fs.StringVar(&profileName, "profile", "balanced", "aggressiveness preset: "+strings.Join(orderedProfiles(), ", "))
@@ -268,6 +268,10 @@ func (s *session) save(path string) error {
 	if err != nil {
 		return err
 	}
+	return s.saveWithPassphrase(path, pass)
+}
+
+func (s *session) saveWithPassphrase(path string, pass []byte) error {
 	plain, err := json.Marshal(s.state)
 	if err != nil {
 		return err

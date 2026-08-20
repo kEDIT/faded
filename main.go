@@ -8,10 +8,8 @@ import (
 	"strings"
 )
 
-// Reasonable defaults: with these files present, bare commands just work.
 const (
-	defaultAttemptsFile = "attempts.txt"
-	defaultSubsFile     = "subs.txt"
+	defaultSubsFile = "subs.txt"
 )
 
 func main() {
@@ -70,18 +68,16 @@ Usage:
 For a full-screen interactive UI, run "faded tui". Like the session, it keeps
 everything in memory and writes nothing to disk.
 
-With no flags, faded looks for %q and %q in the current directory, so the
-common case is just:
-  faded compare        # see how the profiles differ, pick one
-  faded gen            # generate and save ranked guesses
-  faded next 15        # print the next batch to try
-  faded mark 'guess' failed
+With no --attempts flag, faded prompts for near-miss guesses in the terminal.
+Enter one per line, then press Enter on a blank line to generate candidates.
+Use --attempts FILE to read them from a file instead. The optional %q file is
+still read from the current directory when present.
 
 Profiles: %s
 Run "faded gen -h" for the full list of generation options.
 
 State file defaults to $FADED_DIR or the OS temp dir (%s).
-`, defaultAttemptsFile, defaultSubsFile, strings.Join(orderedProfiles(), ", "), os.TempDir())
+`, defaultSubsFile, strings.Join(orderedProfiles(), ", "), os.TempDir())
 }
 
 // addCommonFlags registers --state and --dir on a flag set.
@@ -94,21 +90,23 @@ func addCommonFlags(fs *flag.FlagSet, state, dir *string) {
 // shared input loading
 // ---------------------------------------------------------------------------
 
-// gatherInputs reads attempts (with a friendly error if missing), loads subs if
+// gatherInputs reads attempts from a file or the terminal, loads subs if
 // present, mines recurring substrings, and returns the merged set.
 func gatherInputs(attemptsPath, subsPath string, subList []string) (attempts, substrings, mined, explicit []string, err error) {
-	attempts, err = readLines(attemptsPath)
+	if attemptsPath == "" {
+		attempts, err = readInteractiveAttempts()
+	} else {
+		attempts, err = readLines(attemptsPath)
+	}
 	if err != nil {
-		if os.IsNotExist(err) {
-			err = fmt.Errorf("no attempts file at %q.\n"+
-				"Create it with one near-miss guess per line, or pass --attempts FILE.\n"+
-				"  e.g.  printf 'MyGuess1\\nMyGuess2\\n' > %s",
-				attemptsPath, attemptsPath)
-		}
 		return
 	}
 	if len(attempts) == 0 {
-		err = fmt.Errorf("attempts file %q is empty", attemptsPath)
+		if attemptsPath == "" {
+			err = fmt.Errorf("no near-miss guesses entered")
+		} else {
+			err = fmt.Errorf("attempts file %q is empty", attemptsPath)
+		}
 		return
 	}
 
@@ -126,6 +124,27 @@ func gatherInputs(attemptsPath, subsPath string, subList []string) (attempts, su
 	mined = mineSubstrings(attempts, 3, 2, 12)
 	substrings = dedup(append(append([]string{}, explicit...), mined...))
 	return
+}
+
+// readInteractiveAttempts collects near-miss guesses without putting them in
+// shell history or requiring a temporary file.
+func readInteractiveAttempts() ([]string, error) {
+	if !stdinIsTerminal() {
+		return nil, fmt.Errorf("no --attempts FILE was provided and stdin is not an interactive terminal")
+	}
+	fmt.Fprintln(os.Stderr, "Enter near-miss guesses, one per line. Press Enter on a blank line when done:")
+	var attempts []string
+	for {
+		line, err := stdinReader.ReadString('\n')
+		line = strings.TrimRight(line, "\r\n")
+		if strings.TrimSpace(line) == "" {
+			return attempts, nil
+		}
+		attempts = append(attempts, line)
+		if err != nil {
+			return attempts, nil
+		}
+	}
 }
 
 func cfgFromProfile(p profile) genConfig {
@@ -152,7 +171,7 @@ func cmdCompare(args []string) error {
 		subList        multiFlag
 		top            int
 	)
-	fs.StringVar(&attempts, "attempts", defaultAttemptsFile, "file of near-miss guesses (one per line)")
+	fs.StringVar(&attempts, "attempts", "", "file of near-miss guesses (default: prompt in the terminal)")
 	fs.StringVar(&subs, "subs", defaultSubsFile, "optional file of known building-block substrings")
 	fs.Var(&subList, "sub", "an explicit substring (repeatable)")
 	fs.IntVar(&top, "top", 3, "how many sample top guesses to show per profile")
@@ -201,7 +220,7 @@ func cmdGen(args []string) error {
 		noTypos, noLeet, noAffixes bool
 		dryRun, fresh              bool
 	)
-	fs.StringVar(&attempts, "attempts", defaultAttemptsFile, "file of near-miss guesses (one per line)")
+	fs.StringVar(&attempts, "attempts", "", "file of near-miss guesses (default: prompt in the terminal)")
 	fs.StringVar(&subs, "subs", defaultSubsFile, "optional file of known building-block substrings")
 	fs.Var(&subList, "sub", "an explicit substring (repeatable)")
 	fs.IntVar(&top, "top", 25, "how many candidates to print now")

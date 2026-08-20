@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"flag"
 	"fmt"
 	"os"
@@ -28,10 +29,10 @@ var (
 	// A four-stop fade for the four logo rows: bright -> dim.
 	fadeStops = []string{"#f5f5f5", "#b8a6d9", "#7c6ba0", "#4a4060"}
 
-	dimText    = lipgloss.NewStyle().Foreground(lipgloss.Color("#8a8a8a"))
+	dimText   = lipgloss.NewStyle().Foreground(lipgloss.Color("#8a8a8a"))
 	accent    = lipgloss.NewStyle().Foreground(lipgloss.Color("#b8a6d9"))
 	okStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#7bd88f"))
-	badStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#e88") )
+	badStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#e88"))
 	selBar    = lipgloss.NewStyle().Foreground(lipgloss.Color("#1a1a1a")).Background(lipgloss.Color("#b8a6d9")).Bold(true)
 	dimItem   = lipgloss.NewStyle().Foreground(lipgloss.Color("#666"))
 	keyStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#b8a6d9")).Bold(true)
@@ -48,6 +49,8 @@ type view int
 const (
 	viewList view = iota
 	viewStatus
+	viewHelp
+	viewSave
 )
 
 type tuiModel struct {
@@ -61,9 +64,13 @@ type tuiModel struct {
 	height int
 	width  int
 
-	view    string // "list" or "status"
-	flash   string // transient message line
-	solved  string
+	view   string // "list" or "status"
+	flash  string // transient message line
+	solved string
+
+	saveStage   int
+	savePass    []rune
+	saveConfirm []rune
 }
 
 type candRow struct {
@@ -127,7 +134,10 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		if m.view == "status" {
+		if m.view == "save" {
+			return m.updateSave(msg)
+		}
+		if m.view == "status" || m.view == "help" {
 			// any key returns to the list
 			switch msg.String() {
 			case "q", "ctrl+c":
@@ -171,10 +181,78 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.markCursor("untried")
 		case "s":
 			m.view = "status"
+		case "h":
+			m.view = "help"
+		case "S":
+			m.beginSave()
 		case "tab":
 			m.cycleProfile()
 		}
 		m.clampScroll()
+	}
+	return m, nil
+}
+
+func (m *tuiModel) beginSave() {
+	m.view = "save"
+	m.saveStage = 1
+	m.savePass = nil
+	m.saveConfirm = nil
+	m.flash = ""
+}
+
+func (m *tuiModel) updateSave(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "ctrl+c" || msg.String() == "esc" {
+		m.view = "list"
+		m.savePass = nil
+		m.saveConfirm = nil
+		return m, nil
+	}
+	if msg.String() == "backspace" || msg.String() == "delete" {
+		if m.saveStage == 1 && len(m.savePass) > 0 {
+			m.savePass = m.savePass[:len(m.savePass)-1]
+		} else if m.saveStage == 2 && len(m.saveConfirm) > 0 {
+			m.saveConfirm = m.saveConfirm[:len(m.saveConfirm)-1]
+		}
+		return m, nil
+	}
+	if msg.String() == "enter" {
+		if m.saveStage == 1 {
+			if len(m.savePass) == 0 {
+				m.flash = badStyle.Render("passphrase cannot be empty")
+				return m, nil
+			}
+			m.saveStage = 2
+			m.flash = ""
+			return m, nil
+		}
+		if subtle.ConstantTimeCompare([]byte(string(m.savePass)), []byte(string(m.saveConfirm))) != 1 {
+			m.saveStage = 1
+			m.savePass = nil
+			m.saveConfirm = nil
+			m.flash = badStyle.Render("passphrases did not match")
+			return m, nil
+		}
+
+		path := defaultEncryptedPath()
+		err := m.sess.saveWithPassphrase(path, []byte(string(m.savePass)))
+		m.savePass = nil
+		m.saveConfirm = nil
+		m.view = "list"
+		if err != nil {
+			m.flash = badStyle.Render("save failed: ") + err.Error()
+		} else {
+			m.sess.dirty = false
+			m.flash = okStyle.Render("saved encrypted session: ") + path
+		}
+		return m, nil
+	}
+	if len(msg.Runes) > 0 {
+		if m.saveStage == 1 {
+			m.savePass = append(m.savePass, msg.Runes...)
+		} else {
+			m.saveConfirm = append(m.saveConfirm, msg.Runes...)
+		}
 	}
 	return m, nil
 }
@@ -261,6 +339,12 @@ func (m *tuiModel) View() string {
 	}
 	if m.view == "status" {
 		return m.renderStatusView()
+	}
+	if m.view == "help" {
+		return m.renderHelpView()
+	}
+	if m.view == "save" {
+		return m.renderSaveView()
 	}
 	return m.renderListView()
 }
@@ -390,10 +474,50 @@ func (m *tuiModel) renderStatusView() string {
 	return b.String()
 }
 
+func (m *tuiModel) renderHelpView() string {
+	var b strings.Builder
+	b.WriteString(m.renderLogo())
+	b.WriteString("\n\n")
+	b.WriteString(titleBox.Render("generation options") + "\n")
+	b.WriteString(borderTop.Render(strings.Repeat("─", min(m.width, 60))) + "\n")
+	b.WriteString(fmt.Sprintf("  %-18s %s\n", "profile", "tab cycles conservative -> balanced -> aggressive -> kitchen-sink"))
+	b.WriteString(fmt.Sprintf("  %-18s %s\n", "depth", "max stacked typo slips (profile default; 1 or 2 are practical)"))
+	b.WriteString(fmt.Sprintf("  %-18s %s\n", "beam", "keeps the cheapest typo paths between layers"))
+	b.WriteString(fmt.Sprintf("  %-18s %s\n", "cap", "maximum candidates retained after ranking"))
+	b.WriteString(fmt.Sprintf("  %-18s %s\n", "typos", "filter families such as capslock, transpose, drop, adjacent"))
+	b.WriteString(fmt.Sprintf("  %-18s %s\n", "leet / affixes", "symbol swaps and common prefixes or suffixes"))
+	b.WriteString("\n" + dimText.Render("CLI-only tuning: faded gen -h shows --depth, --beam, --cap, --typos, --no-leet, --no-affixes, --dry-run, and --fresh.") + "\n")
+	b.WriteString("\n" + dimText.Render("press any key to go back") + "\n")
+	b.WriteString(m.helpBar())
+	return b.String()
+}
+
+func (m *tuiModel) renderSaveView() string {
+	var b strings.Builder
+	b.WriteString(m.renderLogo())
+	b.WriteString("\n\n")
+	b.WriteString(titleBox.Render("save encrypted session") + "\n")
+	b.WriteString(borderTop.Render(strings.Repeat("─", min(m.width, 60))) + "\n\n")
+	label := "Passphrase:"
+	value := m.savePass
+	if m.saveStage == 2 {
+		label = "Confirm passphrase:"
+		value = m.saveConfirm
+	}
+	b.WriteString("  " + label + " " + strings.Repeat("•", len(value)) + "\n")
+	b.WriteString(dimText.Render("  saved to "+defaultEncryptedPath()) + "\n")
+	if m.flash != "" {
+		b.WriteString("\n  " + m.flash + "\n")
+	}
+	b.WriteString("\n" + dimText.Render("enter to continue · esc to cancel · backspace to edit") + "\n")
+	b.WriteString(m.helpBar())
+	return b.String()
+}
+
 func (m *tuiModel) helpBar() string {
 	keys := []struct{ k, d string }{
 		{"↑/↓", "move"}, {"w", "worked"}, {"f", "failed"}, {"u", "reset"},
-		{"tab", "profile"}, {"s", "stats"}, {"q", "quit"},
+		{"tab", "profile"}, {"s", "stats"}, {"h", "help"}, {"S", "save"}, {"q", "quit"},
 	}
 	var parts []string
 	for _, e := range keys {
@@ -430,7 +554,7 @@ func cmdTUI(args []string) error {
 		attempts, subs, profileName string
 		subList                     multiFlag
 	)
-	fs.StringVar(&attempts, "attempts", defaultAttemptsFile, "file of near-miss guesses (one per line)")
+	fs.StringVar(&attempts, "attempts", "", "file of near-miss guesses (default: prompt in the terminal)")
 	fs.StringVar(&subs, "subs", defaultSubsFile, "optional file of known building-block substrings")
 	fs.Var(&subList, "sub", "an explicit substring (repeatable)")
 	fs.StringVar(&profileName, "profile", "balanced", "aggressiveness preset: "+strings.Join(orderedProfiles(), ", "))
